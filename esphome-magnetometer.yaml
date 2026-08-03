@@ -1,5 +1,6 @@
 ---
-# This config uses the QMC5883L, a triple-axis magnetometer, to read your water meter or gas meter.
+# Modified esphome-magnetometer.yaml for 0x2C Magnetometer Clone
+# Repository: meissnert/esphome-magnetometer-water-gas-meter
 
 substitutions:
   # water or gas
@@ -66,8 +67,6 @@ esphome:
 
 logger:
   level: INFO
-  logs:
-    qmc5883l: INFO
 
 api:
   services:
@@ -372,6 +371,58 @@ i2c:
     scan: ${i2c_scan}
 
 sensor:
+  # Replaced QMC5883L platform driver with template sensors
+  - platform: template
+    id: magnetometer_x
+    name: ${prefix_name}Magnetic Field Strength X
+    internal: ${hide_magnetic_field_strength_sensors}
+    entity_category: diagnostic
+    unit_of_measurement: µT
+    on_value:
+      then:
+        - lambda: |-
+            if (id(${prefix_id}axis).current_option() == "x") id(${prefix_id}axis_value).publish_state(x);
+            if (id(${prefix_id}calibrating)) {
+              id(${prefix_id}calibrating_axis_x_min) = min(id(${prefix_id}calibrating_axis_x_min), x);
+              id(${prefix_id}calibrating_axis_x_max) = max(id(${prefix_id}calibrating_axis_x_max), x);
+            }
+    filters:
+      - delta: ${magnetic_field_update_delta}
+
+  - platform: template
+    id: magnetometer_y
+    name: ${prefix_name}Magnetic Field Strength Y
+    internal: ${hide_magnetic_field_strength_sensors}
+    entity_category: diagnostic
+    unit_of_measurement: µT
+    on_value:
+      then:
+        - lambda: |-
+            if (id(${prefix_id}axis).current_option() == "y") id(${prefix_id}axis_value).publish_state(x);
+            if (id(${prefix_id}calibrating)) {
+              id(${prefix_id}calibrating_axis_y_min) = min(id(${prefix_id}calibrating_axis_y_min), x);
+              id(${prefix_id}calibrating_axis_y_max) = max(id(${prefix_id}calibrating_axis_y_max), x);
+            }
+    filters:
+      - delta: ${magnetic_field_update_delta}
+
+  - platform: template
+    id: magnetometer_z
+    name: ${prefix_name}Magnetic Field Strength Z
+    internal: ${hide_magnetic_field_strength_sensors}
+    entity_category: diagnostic
+    unit_of_measurement: µT
+    on_value:
+      then:
+        - lambda: |-
+            if (id(${prefix_id}axis).current_option() == "z") id(${prefix_id}axis_value).publish_state(x);
+            if (id(${prefix_id}calibrating)) {
+              id(${prefix_id}calibrating_axis_z_min) = min(id(${prefix_id}calibrating_axis_z_min), x);
+              id(${prefix_id}calibrating_axis_z_max) = max(id(${prefix_id}calibrating_axis_z_max), x);
+            }
+    filters:
+      - delta: ${magnetic_field_update_delta}
+
   # Holds the magnetic field strength value of x, y, or z depending on the axis template select.
   # Increments counters when value crosses thresholds.
   - platform: template
@@ -448,70 +499,6 @@ sensor:
               id(${prefix_id}axis_value_high) = false;
               id(led).turn_off();
             }
-
-  # https://esphome.io/components/sensor/qmc5883l.html
-  - platform: qmc5883l
-    id: ${prefix_id}qmc5883l_id
-    i2c_id: ${prefix_id}i2c_bus
-    address: ${i2c_address}
-    ${axis_x_key}:
-      id: ${prefix_id}qmc5883l_axis_x
-      name: ${prefix_name}Magnetic Field Strength X
-      internal: ${hide_magnetic_field_strength_sensors}
-      entity_category: diagnostic
-      on_raw_value:
-        then:
-          - lambda: |-
-              if (id(${prefix_id}axis).current_option() == "x") id(${prefix_id}axis_value).publish_state(x);
-              if (id(${prefix_id}calibrating)) {
-                id(${prefix_id}calibrating_axis_x_min) = min(id(${prefix_id}calibrating_axis_x_min), x);
-                id(${prefix_id}calibrating_axis_x_max) = max(id(${prefix_id}calibrating_axis_x_max), x);
-              }
-      filters:
-        - delta: ${magnetic_field_update_delta}
-    ${axis_y_key}:
-      id: ${prefix_id}qmc5883l_axis_y
-      name: ${prefix_name}Magnetic Field Strength Y
-      internal: ${hide_magnetic_field_strength_sensors}
-      entity_category: diagnostic
-      on_raw_value:
-        then:
-          - lambda: |-
-              if (id(${prefix_id}axis).current_option() == "y") id(${prefix_id}axis_value).publish_state(x);
-              if (id(${prefix_id}calibrating)) {
-                id(${prefix_id}calibrating_axis_y_min) = min(id(${prefix_id}calibrating_axis_y_min), x);
-                id(${prefix_id}calibrating_axis_y_max) = max(id(${prefix_id}calibrating_axis_y_max), x);
-              }
-      filters:
-        - delta: ${magnetic_field_update_delta}
-    ${axis_z_key}:
-      id: ${prefix_id}qmc5883l_axis_z
-      name: ${prefix_name}Magnetic Field Strength Z
-      internal: ${hide_magnetic_field_strength_sensors}
-      entity_category: diagnostic
-      on_raw_value:
-        then:
-          - lambda: |-
-              if (id(${prefix_id}axis).current_option() == "z") id(${prefix_id}axis_value).publish_state(x);
-              if (id(${prefix_id}calibrating)) {
-                id(${prefix_id}calibrating_axis_z_min) = min(id(${prefix_id}calibrating_axis_z_min), x);
-                id(${prefix_id}calibrating_axis_z_max) = max(id(${prefix_id}calibrating_axis_z_max), x);
-              }
-      filters:
-        - delta: ${magnetic_field_update_delta}
-    temperature:
-      id: ${prefix_id}qmc5883l_temperature
-      name: ${prefix_name}Temperature
-      filters:
-        - lambda: "return x + id(${prefix_id}temperature_offset).state;"
-        - sliding_window_moving_average:
-            window_size: 3000
-            send_every: 3000
-        - or:
-            - throttle: 300s
-            - delta: 0.5
-    oversampling: ${qmc5883l_oversampling}
-    update_interval: ${qmc5883l_update_interval}
 
   - platform: template
     id: ${prefix_id}sensor_track_min
