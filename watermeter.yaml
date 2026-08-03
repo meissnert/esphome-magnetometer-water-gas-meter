@@ -1,0 +1,121 @@
+# Board: Wemos D1 Mini (ESP8266) (Wemos)
+# Definition: definitions/boards/d1_mini/manifest.yaml
+
+substitutions:
+  gpio_led: GPIO2
+  volume_unit: 'gal'
+  i2c_scl: GPIO14  # Pin D5
+  i2c_sda: GPIO12  # Pin D6
+  device_class: 'water'
+  device_icon: 'mdi:water'
+
+i2c:
+  id: i2c_bus
+  sda: ${i2c_sda}
+  scl: ${i2c_scl}
+  frequency: 50kHz
+  scan: true
+
+# Remote Package Import
+packages:
+  meter:
+    url: https://github.com/meissnert/esphome-magnetometer-water-gas-meter
+    ref: main
+    files: [esphome-water-meter.yaml]
+    refresh: 0s
+
+# Raw I2C Polling for 0x2C Magnetometer Clone
+# Raw I2C Polling with Debug Logging
+interval:
+  - interval: 100ms
+    then:
+      - lambda: |-
+          // 1. Maintain continuous mode / measurement pulse on Control Regs
+          uint8_t cfg_b[2] = {0x09, 0x1D}; // Continuous mode 200Hz / 8G range
+          id(i2c_bus).write(0x2C, cfg_b, 2);
+
+          uint8_t cfg_c[2] = {0x0A, 0x01}; // Enable measurement cycle
+          id(i2c_bus).write(0x2C, cfg_c, 2);
+
+          // 2. Read 7 bytes starting at status register 0x00
+          uint8_t reg = 0x00;
+          uint8_t data[7] = {0};
+          
+          if (id(i2c_bus).write(0x2C, &reg, 1) == esphome::i2c::ERROR_OK &&
+              id(i2c_bus).read(0x2C, data, 7) == esphome::i2c::ERROR_OK) {
+            
+            // Reconstruct 16-bit signed integers (Little-Endian: LSB then MSB)
+            int16_t raw_x = (int16_t)((data[2] << 8) | data[1]);
+            int16_t raw_y = (int16_t)((data[4] << 8) | data[3]);
+            int16_t raw_z = (int16_t)((data[6] << 8) | data[5]);
+
+            // Scale factor to convert raw LSB counts to µT (~0.1 µT/LSB for 8 Gauss range)
+            float x_ut = raw_x * 0.1f;
+            float y_ut = raw_y * 0.1f;
+            float z_ut = raw_z * 0.1f;
+
+            static uint8_t log_counter = 0;
+            if (++log_counter >= 10) { // Log twice per second
+              log_counter = 0;
+              ESP_LOGD("magnetometer_clone", "Live µT -> X: %.1f, Y: %.1f, Z: %.1f (Raw: %d, %d, %d)", 
+                       x_ut, y_ut, z_ut, raw_x, raw_y, raw_z);
+            }
+
+            // Publish directly to Tronikos' DSP template sensors
+            id(magnetometer_x).publish_state(x_ut);
+            id(magnetometer_y).publish_state(y_ut);
+            id(magnetometer_z).publish_state(z_ut);
+          }
+  
+esphome:
+  name: water-meter
+  friendly_name: Water meter
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          // 1. Issue Soft Reset / SET pulse (Write 0x80 or 0x01 to Control Reg 2 / 0x0A or 0x0B depending on revision)
+          uint8_t reset_cmd[] = {0x0A, 0x80};
+          id(i2c_bus).write(0x2C, reset_cmd, 2);
+          delay(10);
+
+          // 2. Clear reset bit and configure SET/RESET period
+          uint8_t set_cmd[] = {0x0A, 0x00};
+          id(i2c_bus).write(0x2C, set_cmd, 2);
+          delay(10);
+
+          // 3. Set Control Register 1 (0x09) to Continuous Mode (Mode=0x01, ODR=200Hz 0x0D or 0x1D)
+          // Mode: Continuous measurement, 200Hz sampling rate, 8G range
+          uint8_t mode_cmd[] = {0x09, 0x1D};
+          if (id(i2c_bus).write(0x2C, mode_cmd, 2) == esphome::i2c::ERROR_OK) {
+            ESP_LOGI("magnetometer_init", "Successfully initialized 0x2C magnetometer continuous mode.");
+          } else {
+            ESP_LOGE("magnetometer_init", "Failed to write initialization registers to 0x2C!");
+          }
+
+esp8266:
+  board: d1_mini
+  restore_from_flash: true
+
+preferences:
+  flash_write_interval: 60min
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: "aIZ1jCrWYaz1uxNE1KSa/Q+06AHCugE1NO3cuLdYfUo="
+
+ota:
+  - platform: esphome
+    password: "d44ed9df293facf65e288062d5c7a5e7"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: watermeter Fallback Hotspot
+    password: "RboloNfHnWZ3"
+
+captive_portal:
