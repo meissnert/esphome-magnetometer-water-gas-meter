@@ -30,47 +30,71 @@ interval:
   - interval: 100ms
     then:
       - lambda: |-
-          // 1. Maintain continuous mode registers
-          uint8_t cfg_b[2] = {0x09, 0x1D};
-          id(i2c_bus).write(0x2C, cfg_b, 2);
-
-          uint8_t cfg_c[2] = {0x0A, 0x01};
-          id(i2c_bus).write(0x2C, cfg_c, 2);
-
-          // 2. Read 9 bytes (0x00..0x08) to capture status, XYZ, and temperature
           uint8_t reg = 0x00;
-          uint8_t data[9] = {0};
-          
+          uint8_t data[6] = {0};
+
+          // Read 6 data registers (0x00 to 0x05)
           if (id(i2c_bus).write(0x2C, &reg, 1) == esphome::i2c::ERROR_OK &&
-              id(i2c_bus).read(0x2C, data, 9) == esphome::i2c::ERROR_OK) {
-            
-            // Reconstruct magnetic data
-            int16_t raw_x = (int16_t)((data[2] << 8) | data[1]);
-            int16_t raw_y = (int16_t)((data[4] << 8) | data[3]);
-            int16_t raw_z = (int16_t)((data[6] << 8) | data[5]);
+              id(i2c_bus).read(0x2C, data, 6) == esphome::i2c::ERROR_OK) {
 
-            // Reconstruct raw temperature (Reg 0x07 LSB, Reg 0x08 MSB)
-            int16_t raw_temp = (int16_t)((data[8] << 8) | data[7]);
+            int16_t raw_x = (int16_t)((data[1] << 8) | data[0]);
+            int16_t raw_y = (int16_t)((data[3] << 8) | data[2]);
+            int16_t raw_z = (int16_t)((data[5] << 8) | data[4]);
 
-            // Convert raw LSB to °C and apply user offset
-            // Standard scaling for these ASICs: (raw / 100.0) + offset
-            float temp_offset = id(temperature_offset).state;
-            float temp_c = (raw_temp / 100.0f) + temp_offset;
+            float x_uT = raw_x * 0.1f;
+            float y_uT = raw_y * 0.1f;
+            float z_uT = raw_z * 0.1f;
 
-            static uint8_t log_counter = 0;
-            if (++log_counter >= 10) { // Log twice per second
-              log_counter = 0;
-              ESP_LOGD("magnetometer_clone", "µT -> X: %.1f, Y: %.1f, Z: %.1f | Temp: %.1f °C (Raw: %d)", 
-                       raw_x * 0.1f, raw_y * 0.1f, raw_z * 0.1f, temp_c, raw_temp);
+            // Freeze Watchdog: If X, Y, Z are identical for 10 cycles (~1s), re-arm register 0x09
+            static float prev_x = 0, prev_y = 0, prev_z = 0;
+            static uint8_t freeze_count = 0;
+
+            if (x_uT == prev_x && y_uT == prev_y && z_uT == prev_z) {
+              freeze_count++;
+            } else {
+              freeze_count = 0;
             }
 
-            // Publish magnetic states
-            id(magnetometer_x).publish_state(raw_x * 0.1f);
-            id(magnetometer_y).publish_state(raw_y * 0.1f);
-            id(magnetometer_z).publish_state(raw_z * 0.1f);
+            prev_x = x_uT;
+            prev_y = y_uT;
+            prev_z = z_uT;
 
-            // Publish temperature state
-            id(temperature).publish_state(temp_c);
+            if (freeze_count >= 10) {
+              freeze_count = 0;
+              uint8_t rearm[2] = {0x09, 0x1D};
+              id(i2c_bus).write(0x2C, rearm, 2);
+              ESP_LOGW("magnetometer_clone", "Data static detected: Re-armed mode reg 0x09");
+            }
+
+            // Publish raw states
+            id(magnetometer_x).publish_state(x_uT);
+            id(magnetometer_y).publish_state(y_uT);
+            id(magnetometer_z).publish_state(z_uT);
+
+            // Forward package tracking globals to template sensors
+            // Throttled tracking publish to HA (every ~1s / 10 cycles)
+            static uint8_t track_pub_counter = 0;
+            if (++track_pub_counter >= 10) {
+              track_pub_counter = 0;
+              id(ha_track_min).publish_state(id(track_min));
+              id(ha_track_max).publish_state(id(track_max));
+              id(ha_half_rotations).publish_state(id(half_rotations_total));
+            }
+
+            // Throttled logging (every 2s)
+            static uint8_t log_counter = 0;
+            if (++log_counter >= 20) {
+              log_counter = 0;
+              ESP_LOGD("magnetometer_clone", "µT -> X: %.1f, Y: %.1f, Z: %.1f", x_uT, y_uT, z_uT);
+            }
+
+            // Temperature fallback publish (every 10s)
+            static uint8_t temp_pub_counter = 0;
+            if (++temp_pub_counter >= 100) {
+              temp_pub_counter = 0;
+              float temp_offset = id(temperature_offset).state;
+              id(temperature).publish_state(temp_offset);
+            }
           }
 
 sensor:
@@ -83,31 +107,40 @@ sensor:
     accuracy_decimals: 1
     icon: "mdi:thermometer"
     
+  - platform: template
+    name: "Water Meter Track Min"
+    id: ha_track_min
+    unit_of_measurement: "µT"
+    icon: "mdi:arrow-collapse-down"
+    accuracy_decimals: 1
+
+  - platform: template
+    name: "Water Meter Track Max"
+    id: ha_track_max
+    unit_of_measurement: "µT"
+    icon: "mdi:arrow-collapse-up"
+    accuracy_decimals: 1
+
+  - platform: template
+    name: "Water Meter Half Rotations"
+    id: ha_half_rotations
+    icon: "mdi:counter"
+    accuracy_decimals: 0
+    state_class: total_increasing
+    
 esphome:
   name: water-meter
   friendly_name: Water meter
   on_boot:
-    priority: -100
+    priority: 800.0
     then:
       - lambda: |-
-          // 1. Issue Soft Reset / SET pulse (Write 0x80 or 0x01 to Control Reg 2 / 0x0A or 0x0B depending on revision)
-          uint8_t reset_cmd[] = {0x0A, 0x80};
-          id(i2c_bus).write(0x2C, reset_cmd, 2);
-          delay(10);
-
-          // 2. Clear reset bit and configure SET/RESET period
-          uint8_t set_cmd[] = {0x0A, 0x00};
-          id(i2c_bus).write(0x2C, set_cmd, 2);
-          delay(10);
-
-          // 3. Set Control Register 1 (0x09) to Continuous Mode (Mode=0x01, ODR=200Hz 0x0D or 0x1D)
-          // Mode: Continuous measurement, 200Hz sampling rate, 8G range
-          uint8_t mode_cmd[] = {0x09, 0x1D};
-          if (id(i2c_bus).write(0x2C, mode_cmd, 2) == esphome::i2c::ERROR_OK) {
-            ESP_LOGI("magnetometer_init", "Successfully initialized 0x2C magnetometer continuous mode.");
-          } else {
-            ESP_LOGE("magnetometer_init", "Failed to write initialization registers to 0x2C!");
-          }
+          // Write continuous mode to reg 0x09 (0x1D) and SET/RESET to reg 0x0A (0x01)
+          uint8_t init_mode[2] = {0x09, 0x1D};
+          uint8_t init_sr[2]   = {0x0A, 0x01};
+          id(i2c_bus).write(0x2C, init_mode, 2);
+          id(i2c_bus).write(0x2C, init_sr, 2);
+          ESP_LOGI("magnetometer_clone", "Sensor initialized on boot.");
 
 esp8266:
   board: d1_mini
