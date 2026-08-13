@@ -1,39 +1,68 @@
 # esphome-magnetometer-water-gas-meter [![Made for ESPHome](https://img.shields.io/badge/Made_for-ESPHome-black?logo=esphome)](https://esphome.io)
 
-This [ESPHome](https://esphome.io) package allows reading your water meter or gas meter using the QMC5883L or QMC5883P or HMC5883L or MMC5603 or MLX90393, a triple-axis magnetometer.
+A single, self-contained [ESPHome](https://esphome.io) configuration for reading your water meter or gas meter using a cheap Chinese QMC5883L magnetometer clone (I2C address `0x2C`) and an ESP32.
 
-TLDR; Add this to your ESPHome device configuration:
+This is a fork of [tronikos/esphome-magnetometer-water-gas-meter](https://github.com/tronikos/esphome-magnetometer-water-gas-meter), condensed into **one YAML file** that:
 
-```yaml
-substitutions:
-  volume_unit: 'gal'
-  i2c_scl: GPIO5  # D1
-  i2c_sda: GPIO4  # D2
-  # Set to false only if needed during manual calibration.
-  # Do not keep them at false since these slow down the ESP device
-  # and reduce the accuracy during high flow.
-  hide_magnetic_field_strength_sensors: 'true'
-  hide_half_rotations_total_sensor: 'true'
+- works with the raw-I2C `0x2C` magnetometer clone (the built-in ESPHome `qmc5883l` component cannot read this sensor, so the config polls the registers directly),
+- targets an ESP32 dev board only (no D1 mini / ESP8266),
+- needs no remote packages or `!include` chains.
 
-packages:
-  meter:
-    url: https://github.com/tronikos/esphome-magnetometer-water-gas-meter
-    ref: main
-    file: esphome-water-meter.yaml
-    # Or for gas meter:
-    # file: esphome-gas-meter.yaml
-    # Or if you are using QMC5883P instead of QMC5883L:
-    # files: [esphome-water-meter.yaml, qmc5883p.yaml]
-    # Or if you are using HMC5883L instead of QMC5883L:
-    # files: [esphome-water-meter.yaml, hmc5883l.yaml]
-    # Or if you are using MMC5603 instead of QMC5883L:
-    # files: [esphome-water-meter.yaml, mmc5603.yaml]
-    # Or if you are using MLX90393 instead of QMC5883L:
-    # files: [esphome-water-meter.yaml, mlx90393.yaml]
-    refresh: 0s
-```
+The configuration is entirely contained in [`esphome-magnetometer-esp32.yaml`](esphome-magnetometer-esp32.yaml). Just copy its contents into your device configuration.
 
 <img src="https://github.com/user-attachments/assets/eec2ee3b-b133-458f-bf28-de8dc780e3d4" alt="Water meter in Home Assistant" width=40%>
+
+## Quick start
+
+1. Set up **ESPHome**, either the [Home Assistant ESPHome add-on](https://esphome.io/guides/getting_started_hassio.html) or the standalone dashboard.
+2. Create a new ESP32 device (e.g. `water-meter`).
+3. Add your WiFi credentials to `secrets.yaml`:
+
+   ```yaml
+   wifi_ssid: "YourSSID"
+   wifi_password: "YourPassword"
+   ```
+
+4. Replace the generated configuration with the **full contents of [`esphome-magnetometer-esp32.yaml`](esphome-magnetometer-esp32.yaml)**. Everything is self-contained — there are no packages, includes, or separate sensor files.
+5. Optionally change the API encryption key and OTA password in the config to your own values.
+6. Select **Save** and then **Install**.
+7. Home Assistant should auto-discover your new device.
+
+## Features
+
+- Raw I2C register polling of the `0x2C` magnetometer clone at 20 ms
+- Freeze watchdog: if the data goes static (the clone stops updating its registers), the config re-arms the sensor mode register automatically
+- Temperature readout (QMC5883L registers `0x07`-`0x08`) with a user-adjustable offset
+- On-device calibration button that captures per-axis min/max, auto-selects the axis with the strongest signal, and writes both `Magnet Span` (adaptive mode) and `Threshold lower`/`Threshold upper` (threshold mode)
+- Two detection algorithms selectable in Home Assistant:
+  - **Adaptive** (default): a min/max tracker with slow decay and span clamping that follows thermal drift automatically
+  - **Threshold**: fixed upper/lower thresholds, for stable-temperature environments
+- Half-rotation counting, `Total` volume and `Flow` rate sensors
+- Onboard LED (GPIO2) blinks as the magnet rotates
+- `set_total` API action to align the `Total` sensor with the physical meter reading
+
+## Configuration
+
+All tunable values are at the top of the file in the `substitutions:` section:
+
+| Substitution | Default | Description |
+| --- | --- | --- |
+| `device_class` | `water` | `water` or `gas` |
+| `device_icon` | `mdi:water` | `mdi:water` or `mdi:meter-gas` |
+| `volume_unit` | `gal` | One of `CCF`, `ft³`, `gal`, `L`, `m³` (see calibration note below) |
+| `gpio_led` | `GPIO2` | LED pin (onboard blue LED of most ESP32 dev boards) |
+| `i2c_sda` / `i2c_scl` | `GPIO21` / `GPIO22` | Standard ESP32 hardware I2C pins |
+| `i2c_frequency` | `100kHz` | I2C bus speed |
+| `sensor_update_interval` | `20ms` | Raw magnetometer polling interval |
+| `volume_per_half_rotation_initial_value` | `0.01008156` | See [Volume per half rotation](#volume-per-half-rotation) |
+| `calibration_minimal_axis_range_initial_value` | `20` | Minimum µT range an axis must show to be accepted during calibration |
+| `flow_update_interval_seconds` | `10` | How often the `Flow` sensor is published |
+| `magnetic_field_update_delta` | `3` | Only publish tracker updates when the field changes by this many µT |
+| `hide_magnetic_field_strength_sensors` | `true` | Set to `false` only during manual calibration |
+| `hide_half_rotations_total_sensor` | `true` | Set to `false` only during manual calibration |
+| `tracker_decay_rate` | `0.0005` | Adaptive tracker decay per tick (µT). ~1.5 µT/min. Increase if temperature changes cause false triggers |
+| `min_span_multiplier` | `0.8` | Minimum adaptive detection window as a fraction of `Magnet Span` |
+| `max_span_multiplier` | `1.2` | Maximum adaptive detection window as a fraction of `Magnet Span` |
 
 ## Compatibility
 
@@ -41,7 +70,7 @@ packages:
 
 The magnetometer is used to read the rotating magnet inside your water meter.
 
-This should be compatible will all the water meters the Flume water sensor is compatible with, which is [compatible](https://help.flumewater.com/en/articles/1618594-is-the-flume-device-compatible-with-all-water-meters) with about 95% of water meters in the United States.
+This should be compatible with all the water meters the Flume water sensor is compatible with, which is [compatible](https://help.flumewater.com/en/articles/1618594-is-the-flume-device-compatible-with-all-water-meters) with about 95% of water meters in the United States.
 
 To verify compatibility follow [this](https://help.flumewater.com/en/articles/1618594-is-the-flume-device-compatible-with-all-water-meters). Alternatively, install the Sensors app on your phone, place your phone next to the meter, and see if the Geomagnetic Field sensors are changing while water is running.
 
@@ -79,10 +108,9 @@ To verify compatibility install the Sensors app on your phone, place your phone 
 
 ### Parts
 
-- ESP8266 or ESP32 with power adapter
+- ESP32 dev board with power adapter
   - I placed mine inside the garage
-  - For high flow meters a dual core ESP32 is strongly preferred
-- QMC5883L or QMC5883P or HMC5883L or MMC5603 or MLX90393 magnetometer
+- QMC5883L magnetometer (the Chinese `0x2C` clone works with this config)
   - I placed mine in the water meter box 20ft away from the garage
 - Ethernet cable
   - I used 32.8ft or 10m direct burial CAT6. A user has reported they successfully used 75ft or 22.9m direct burial CAT6.
@@ -101,137 +129,21 @@ To verify compatibility install the Sensors app on your phone, place your phone 
 
 ### Wiring
 
-QMC5883L | ESP8266
---- | ---
-VCC | 3.3V
-GND | GND
-SCL | D1
-SDA | D2
+| QMC5883L | ESP32 |
+| --- | --- |
+| VCC | 3.3V |
+| GND | GND |
+| SCL | GPIO22 |
+| SDA | GPIO21 |
+
+The config also uses GPIO2 for the onboard LED (used to indicate magnet rotation during testing). If your board has the LED on a different pin, change `gpio_led` in the substitutions.
 
 If your magnetometer module has its own 3.3V regulator you can connect the sensor's VCC to 5V.
 The ethernet cable has 4 twisted pairs of wires. Use any solid wire color for the 4 above pins. Tie the 4 white wires together with the GND solid wire. You might need to use a header pin for the GND. If you use a header pin cut the 5 GND wires shorter to avoid the ball of wires I had...
 
 ![magnetometer wiring](https://github.com/tronikos/esphome-magnetometer-water-gas-meter/assets/9987465/c7052171-eee1-44cb-90f4-76cad4e46334)
 ![magnetometer in adhesive heat shrink tubing](https://github.com/tronikos/esphome-magnetometer-water-gas-meter/assets/9987465/0ca8c738-63c2-4d38-ae35-42bb219b88d1)
-![d1 mini wiring](https://github.com/tronikos/esphome-magnetometer-water-gas-meter/assets/9987465/b8c3df8d-8111-415b-aecc-64d9c5a290c1)
-![d1 mini lego case](https://github.com/tronikos/esphome-magnetometer-water-gas-meter/assets/9987465/6d8d85a0-b00c-4db9-9484-3b345e73f848)
 ![driveway](https://github.com/tronikos/esphome-magnetometer-water-gas-meter/assets/9987465/69a47f3e-8d8f-4c2e-aec8-14cb729b48a4)
-
-## Software installation
-
-1. Setup **ESPHome**, if you don't have it already, by following [Getting Started with ESPHome and Home Assistant](https://esphome.io/guides/getting_started_hassio.html).
-2. In the **ESPHome Dashboard** select **New device**, **Continue**, give a name: e.g. Water meter, **Next**, select device type based on the ESP chip used e.g. ESP8266.
-3. In the **Configuration created!** page select **Skip** to skip installation for now until we make a few changes.
-4. Select **Edit** on the created configuration e.g. water-meter.yaml.
-5. Skip this step if you used an `esp32`. Change `esp8266` section to:
-
-    ```yaml
-    esp8266:
-      board: d1_mini
-      restore_from_flash: true
-
-    preferences:
-      flash_write_interval: 60min
-    ```
-
-6. Add the following (either at the beginning or the end of the file):
-
-    ```yaml
-    substitutions:
-      # For water one of: CCF, ft³, gal, L, m³
-      # For gas one of: CCF, ft³, m³
-      # For better accuracy avoid using large units like CCF and m³.
-      # You can always change the unit later in Home Assistant.
-      volume_unit: 'gal'
-      i2c_scl: GPIO5  # D1
-      i2c_sda: GPIO4  # D2
-      # Set to false only if needed during manual calibration.
-      # Do not keep them at false since these slow down the ESP device
-      # and reduce the accuracy during high flow.
-      hide_magnetic_field_strength_sensors: 'true'
-      hide_half_rotations_total_sensor: 'true'
-
-    packages:
-      meter:
-        url: https://github.com/tronikos/esphome-magnetometer-water-gas-meter
-        ref: main
-        file: esphome-water-meter.yaml
-        # Or for gas meter:
-        # file: esphome-gas-meter.yaml
-        # Or if you are using HMC5883L instead of QMC5883L:
-        # files: [esphome-water-meter.yaml, hmc5883l.yaml]
-        # Or if you are using MMC5603 instead of QMC5883L:
-        # files: [esphome-water-meter.yaml, mmc5603.yaml]
-        # Or if you are using MLX90393 instead of QMC5883L:
-        # files: [esphome-water-meter.yaml, mlx90393.yaml]
-        refresh: 0s
-    ```
-
-7. Change the values in the `substitutions` section based on your setting, e.g. if you have used different pins, or if you prefer a different unit.
-8. Your configuration should now look something like the following:
-
-    ```yaml
-    substitutions:
-      volume_unit: 'gal'
-      i2c_scl: GPIO5  # D1
-      i2c_sda: GPIO4  # D2
-      # Set to false only if needed during manual calibration.
-      # Do not keep them at false since these slow down the ESP device
-      # and reduce the accuracy during high flow.
-      hide_magnetic_field_strength_sensors: 'true'
-      hide_half_rotations_total_sensor: 'true'
-
-    packages:
-      meter:
-        url: https://github.com/tronikos/esphome-magnetometer-water-gas-meter
-        ref: main
-        file: esphome-water-meter.yaml
-        # Or for gas meter:
-        # file: esphome-gas-meter.yaml
-        refresh: 0s
-
-    esphome:
-      name: water-meter
-      friendly_name: Water meter
-
-    esp8266:
-      board: d1_mini
-      restore_from_flash: true
-
-    preferences:
-      flash_write_interval: 60min
-
-    # Enable logging
-    logger:
-
-    # Enable Home Assistant API
-    api:
-      encryption:
-        key: "L8408egzTATPCBT1nzvFpqj4YlVERRO31+GyB/yjf4E="
-
-    ota:
-      - platform: esphome
-        password: "d44ed9df293facf65e288062d5c7a5e7"
-
-    wifi:
-      ssid: !secret wifi_ssid
-      password: !secret wifi_password
-
-      # Enable fallback hotspot (captive portal) in case wifi connection fails
-      ap:
-        ssid: "water-meter Fallback Hotspot"
-        password: "8cSGOshkb2Rw"
-
-    captive_portal:
-        
-    ```
-
-9. Select **Save** and then **Install**.
-10. Only for the first install select **Plug into this computer**. For subsequent updates/installs you can install **Wirelessly**.
-11. Select **Download project** to save a bin file.
-12. Select **Open ESPHome Web**, **Connect**, **Install downloaded project**.
-13. In the **Install your existing ESPHome project** page select **Choose File**, select the previously downloaded bin file, and select **Install**.
-14. Home Assistant should auto-discover your new device.
 
 ## Calibration
 
@@ -239,10 +151,10 @@ The ethernet cable has 4 twisted pairs of wires. Use any solid wire color for th
 
 Two detection algorithms are available, controlled by the **"Detection algorithm"** select:
 
-Algorithm | Best For
---- | ---
-**Adaptive** (default) | **Recommended**. Handles temperature drift automatically
-**Threshold** | Backward compatibility with existing installations
+| Algorithm | Best For |
+| --- | --- |
+| **Adaptive** (default) | **Recommended**. Handles temperature drift automatically |
+| **Threshold** | Backward compatibility with existing installations |
 
 > **Recommendation:** Use the Adaptive algorithm. Threshold is available for backward compatibility with existing installations.
 
@@ -262,7 +174,7 @@ Algorithm | Best For
 
 1. Run a light stream of water/gas.
 2. Press the "**Calibrate axis**" button in Home Assistant.
-3. Wait for calibration to complete (default 5 seconds, configurable).
+3. Wait for calibration to complete (default 5 seconds, configurable via the `Calibration time` number).
 
 The system will automatically:
 
@@ -571,7 +483,7 @@ actions:
   - action: sql.query
     data:
       query: |-
-        SELECT 
+        SELECT
           (
             SELECT MAX("sum") - MIN("sum")
             FROM statistics_short_term s
@@ -591,9 +503,9 @@ actions:
       - condition: template
         value_template: |-
           {% set row = sql_result['result'][0] %}
-          {{ 
-             row['volume_delta'] is not none and 
-             row['volume_delta'] > 0.015 and 
+          {{
+             row['volume_delta'] is not none and
+             row['volume_delta'] > 0.015 and
              (row['max_flow_rate'] is none or row['max_flow_rate'] < 0.1)
           }}
     then:
@@ -657,11 +569,12 @@ mode: single
 
 - **No data from sensors or connection instability:**
   - Double-check your wiring. VCC, GND, SCL, and SDA must be correct.
-  - Verify the I2C address of your sensor in the ESPHome logs.
+  - Verify the I2C address of your sensor in the ESPHome logs. This config polls address `0x2C` directly.
   - Your cable might be too long or poor quality. Try a shorter, shielded cable.
   - If you are experiencing instability with a longer cable, you may consider adding `i2c_frequency: 10kHz` to the substitution in the YAML.
   - Additionally, you may wish to consider reducing the SCL/SDA pull-up resistors to 1.2kΩ (many devices ship with 4.7kΩ pre-installed). For 3.3V I2C logic, 1kΩ is the minimum.
+- **Data goes static and stops updating:**
+  - This config includes a freeze watchdog that re-arms the sensor's mode register when the values stop changing. If you still see freezes, check the ESPHome logs for "Data static detected" messages.
 - **Inaccurate readings:**
   - Recalibrate! Flow rate and totals depend entirely on correct calibration.
   - Ensure the sensor is mounted securely and hasn't shifted.
-  - For high flow rates, an ESP8266 may not be able to keep up. Consider upgrading to an ESP32.
