@@ -8,7 +8,7 @@ substitutions:
 
 packages:
   water_meter: !include
-    file: esphome-magnetometer.yaml
+    file: esphome-magnetometer-esp32.yaml
     vars:
       device_class: 'water'
       device_icon: 'mdi:water'
