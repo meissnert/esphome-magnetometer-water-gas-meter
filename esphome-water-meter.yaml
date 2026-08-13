@@ -6,12 +6,12 @@ substitutions:
   # You can always change the unit later in Home Assistant.
   volume_unit: 'gal'
 
-#packages:
-#  water_meter: !include
-#    file: esphome-magnetometer-esp32.yaml
-#    vars:
-#      device_class: 'water'
-#      device_icon: 'mdi:water'
+packages:
+  water_meter: !include
+    file: esphome-magnetometer.yaml
+    vars:
+      device_class: 'water'
+      device_icon: 'mdi:water'
 
 switch:
   # LED flashes faster/slower as magnet rotates on water meter
