@@ -1,8 +1,8 @@
 # esphome-magnetometer-water-gas-meter [![Made for ESPHome](https://img.shields.io/badge/Made_for-ESPHome-black?logo=esphome)](https://esphome.io)
 
-A single, self-contained [ESPHome](https://esphome.io) configuration for reading your water meter or gas meter using a cheap Chinese QMC5883L magnetometer clone (I2C address `0x2C`) and an ESP32.
+A single, self-contained [ESPHome](https://esphome.io) configuration for reading your water meter or gas meter using a cheap Chinese MMC5883MA / QMC5883P series magnetometer clone (I2C address `0x2C`) and an ESP32.
 
-This is a fork of [tronikos/esphome-magnetometer-water-gas-meter](https://github.com/tronikos/esphome-magnetometer-water-gas-meter), condensed into **one YAML file** that:
+This is a fork of [tronikos/esphome-magnetometer-water-gas-meter](https://github.com/tronikos/esphome-magnetometer-water-gas-meter), built specifically to support the MMC5883MA / QMC5883P series clone sensor. It is condensed into **one YAML file** that:
 
 - works with the raw-I2C `0x2C` magnetometer clone (the built-in ESPHome `qmc5883l` component cannot read this sensor, so the config polls the registers directly),
 - targets an ESP32 dev board only (no D1 mini / ESP8266),
@@ -30,9 +30,9 @@ The configuration is entirely contained in [`esphome-magnetometer-esp32.yaml`](e
 
 ## Features
 
-- Raw I2C register polling of the `0x2C` magnetometer clone at 20 ms
+- Raw I2C register polling of the `0x2C` MMC5883MA / QMC5883P clone at 20 ms
 - Freeze watchdog: if the data goes static (the clone stops updating its registers), the config re-arms the sensor mode register automatically
-- Temperature readout (QMC5883L registers `0x07`-`0x08`) with a user-adjustable offset
+- Temperature readout (registers `0x07`-`0x08`) with a user-adjustable offset
 - On-device calibration button that captures per-axis min/max, auto-selects the axis with the strongest signal, and writes both `Magnet Span` (adaptive mode) and `Threshold lower`/`Threshold upper` (threshold mode)
 - Two detection algorithms selectable in Home Assistant:
   - **Adaptive** (default): a min/max tracker with slow decay and span clamping that follows thermal drift automatically
@@ -110,7 +110,7 @@ To verify compatibility install the Sensors app on your phone, place your phone 
 
 - ESP32 dev board with power adapter
   - I placed mine inside the garage
-- QMC5883L magnetometer (the Chinese `0x2C` clone works with this config)
+- MMC5883MA / QMC5883P series magnetometer (the Chinese `0x2C` clone works with this config)
   - I placed mine in the water meter box 20ft away from the garage
 - Ethernet cable
   - I used 32.8ft or 10m direct burial CAT6. A user has reported they successfully used 75ft or 22.9m direct burial CAT6.
@@ -129,7 +129,7 @@ To verify compatibility install the Sensors app on your phone, place your phone 
 
 ### Wiring
 
-| QMC5883L | ESP32 |
+| MMC5883MA / QMC5883P clone | ESP32 |
 | --- | --- |
 | VCC | 3.3V |
 | GND | GND |
@@ -218,8 +218,8 @@ If you would like your "Total" reading to match the reading displayed on your ph
 
 ### Temperature
 
-Only supported if you are using a QMC5883L.
-Place another temperature sensor next to the QMC5883L and adjust the temperature offset so that they match.
+Only supported if you are using an MMC5883MA / QMC5883P series clone.
+Place another temperature sensor next to the magnetometer and adjust the temperature offset so that they match.
 
 ## Home Assistant Integration Examples
 
