@@ -30,9 +30,8 @@ The configuration is entirely contained in [`esphome-magnetometer-esp32.yaml`](e
 
 ## Features
 
-- Raw I2C register polling of the `0x2C` MMC5883MA / QMC5883P clone at 20 ms
-- Freeze watchdog: if the data goes static (the clone stops updating its registers), the config re-arms the sensor mode register automatically
-- Temperature readout (registers `0x07`-`0x08`) with a user-adjustable offset
+- Raw I2C register polling of the `0x2C` QMC5883P clone at 20 ms (QMC5883P register map: CTRL1=`0x0A`, CTRL2=`0x0B`)
+- Freeze watchdog: if the data goes static (the clone stops updating its registers), the config re-arms CTRL1/CTRL2 automatically
 - On-device calibration button that captures per-axis min/max, auto-selects the axis with the strongest signal, and writes both `Magnet Span` (adaptive mode) and `Threshold lower`/`Threshold upper` (threshold mode)
 - Two detection algorithms selectable in Home Assistant:
   - **Adaptive** (default): a min/max tracker with slow decay and span clamping that follows thermal drift automatically
@@ -40,6 +39,7 @@ The configuration is entirely contained in [`esphome-magnetometer-esp32.yaml`](e
 - Half-rotation counting, `Total` volume and `Flow` rate sensors
 - Onboard LED (GPIO2) blinks as the magnet rotates
 - `set_total` API action to align the `Total` sensor with the physical meter reading
+- Web UI at `http://<ip>/` (status, logs, entity states, restart, OTA upload) with HTTP basic auth via `web_username` / `web_password` secrets
 
 ## Configuration
 
@@ -218,8 +218,11 @@ If you would like your "Total" reading to match the reading displayed on your ph
 
 ### Temperature
 
-Only supported if you are using an MMC5883MA / QMC5883P series clone.
-Place another temperature sensor next to the magnetometer and adjust the temperature offset so that they match.
+Not supported on the QMC5883P — unlike the QMC5883L, the QMC5883P has no temperature
+output register (regs `0x07`/`0x08` are reserved), so the config leaves the
+`Temperature` sensor unpublished. If your clone ever exposes a real temperature
+register, re-enable the read in the interval lambda and use the `Temperature Offset`
+number to align it with a reference sensor.
 
 ## Home Assistant Integration Examples
 
@@ -574,7 +577,7 @@ mode: single
   - If you are experiencing instability with a longer cable, you may consider adding `i2c_frequency: 10kHz` to the substitution in the YAML.
   - Additionally, you may wish to consider reducing the SCL/SDA pull-up resistors to 1.2kΩ (many devices ship with 4.7kΩ pre-installed). For 3.3V I2C logic, 1kΩ is the minimum.
 - **Data goes static and stops updating:**
-  - This config includes a freeze watchdog that re-arms the sensor's mode register when the values stop changing. If you still see freezes, check the ESPHome logs for "Data static detected" messages.
+  - This config includes a freeze watchdog that re-arms CTRL1/CTRL2 when the values stop changing. If you still see freezes, check the ESPHome logs for "Data static detected" messages.
 - **Inaccurate readings:**
   - Recalibrate! Flow rate and totals depend entirely on correct calibration.
   - Ensure the sensor is mounted securely and hasn't shifted.

@@ -1,7 +1,11 @@
 ---
-# ESP32 self-contained config for a Chinese 0x2C QMC5883L clone magnetometer.
-# Full port of tronikos/esphome-magnetometer-water-gas-meter (adaptive + threshold
-# detection, calibration, totalizer, flow) driven by raw I2C register polling.
+# ESP32 self-contained config for a Chinese 0x2C QMC5883P (QMC5883P register map)
+# magnetometer clone. Full port of tronikos/esphome-magnetometer-water-gas-meter
+# (adaptive + threshold detection, calibration, totalizer, flow) driven by raw I2C
+# register polling.
+#
+# NOTE: 0x2C is the QMC5883P default address (chipid 0x00 = 0x80). Its register map
+# differs from the QMC5883L: data=0x01..0x06, status=0x09, CTRL1=0x0A, CTRL2=0x0B.
 
 substitutions:
   # water or gas
@@ -43,13 +47,13 @@ substitutions:
   tracker_decay_rate: '0.0005'
   # Minimum span as fraction of calibrated magnet_span. Keeps the detection window
   # open when flow stops, ensuring slow leaks are still detected.
-  # 0.8 = window stays at 80% of calibrated size.
-  min_span_multiplier: '0.8'
+  # 0.3 = window stays at 30% of calibrated size (keeps fast-pulse triggering tight).
+  min_span_multiplier: '0.3'
   # Maximum span as fraction of calibrated magnet_span.
   # If the calculated span exceeds this (e.g., due to bad initialization or huge signal jump),
   # the opposite tracker is dragged along to maintain the maximum allowed size.
-  # 1.1 = Max allowed window is 120% of calibrated size.
-  max_span_multiplier: '1.2'
+  # 1.0 = window cannot exceed the calibrated size.
+  max_span_multiplier: '1.0'
 
 # ESP32 Core Setup
 esp32:
@@ -71,12 +75,18 @@ esphome:
     priority: 800.0
     then:
       - lambda: |-
-          // Write continuous mode to reg 0x09 (0x1D) and SET/RESET to reg 0x0A (0x01)
-          uint8_t init_mode[2] = {0x09, 0x1D};
-          uint8_t init_sr[2]   = {0x0A, 0x01};
-          id(i2c_bus).write(0x2C, init_mode, 2);
-          id(i2c_bus).write(0x2C, init_sr, 2);
-          ESP_LOGI("magnetometer_clone", "Sensor initialized on boot.");
+          // QMC5883P register map (NOT QMC5883L): chipid=0x00(0x80), data=0x01..0x06,
+          // status=0x09 (read-only!), CTRL1=0x0A, CTRL2=0x0B. The old writes to 0x09 were
+          // silently ignored and 0x0A=0x01 left ODR at its 10Hz default -> stuck at 10Hz.
+          // 0x0A=0x1D: MODE=Normal(01) + ODR=200Hz(11) + OSR1=4x(01) + DSR=1(00)
+          // 0x0B=0x08: RNG=+-8G(10) + SET/RESET both on(00)
+          // 0x29=0x06: axis sign config (QST datasheet setup example)
+          uint8_t init_sign[2]  = {0x29, 0x06};
+          uint8_t init_ctrl1[2] = {0x0A, 0x1D};
+          uint8_t init_ctrl2[2] = {0x0B, 0x08};
+          id(i2c_bus).write(0x2C, init_sign, 2);
+          id(i2c_bus).write(0x2C, init_ctrl1, 2);
+          id(i2c_bus).write(0x2C, init_ctrl2, 2);
 
 preferences:
   flash_write_interval: 60min
@@ -101,6 +111,7 @@ api:
 ota:
   - platform: esphome
     password: "d44ed9df293facf65e288062d5c7a5e7"
+  - platform: web_server
 
 wifi:
   ssid: !secret wifi_ssid
@@ -110,6 +121,15 @@ wifi:
     password: "RboloNfHnWZ3"
 
 captive_portal:
+
+# Web UI at http://<ip>/ — status, logs, entity states, restart, OTA upload.
+# Credentials come from secrets.yaml (web_username / web_password).
+# OTA upload through the web UI is enabled via `- platform: web_server` above.
+web_server:
+  port: 80
+  auth:
+    username: !secret web_username
+    password: !secret web_password
 
 globals:
   - id: half_rotations_total
@@ -208,7 +228,7 @@ number:
     entity_category: config
     mode: box
     min_value: 1.0
-    max_value: 2000
+    max_value: 20000
     step: 0.1
     initial_value: 40.0
     update_interval: never
@@ -400,8 +420,8 @@ button:
           id(track_max) = NAN;
           id(track_min) = NAN;
 
-          // Set thresholds for threshold-based algorithm
-          float tolerance = 5 / (20.0 / min_axis_range);
+          // Set thresholds for threshold-based algorithm (30% of half-range each side)
+          float tolerance = max_range_found * 0.30;
           float lower_threshold = min + (max - min) / 2 - tolerance;
           float upper_threshold = min + (max - min) / 2 + tolerance;
           id(threshold_lower).make_call().set_value(roundf(lower_threshold * 10) / 10).perform();
@@ -499,9 +519,10 @@ sensor:
                  id(track_min) -= correction;
               }
 
-              // 5. Calculate Center and Hysteresis (25% of window size)
+              // 5. Calculate Center and Hysteresis (20% of window size, 30 µT floor)
               float midpoint = (id(track_max) + id(track_min)) / 2.0;
-              float hyst = (id(track_max) - id(track_min)) * 0.25;
+              float hyst = (id(track_max) - id(track_min)) * 0.20;
+              if (hyst < 30.0f) hyst = 30.0f;
 
               // 6. Trigger Logic
               if (x > (midpoint + hyst) && !id(axis_value_high)) {
@@ -599,9 +620,7 @@ sensor:
     state_class: measurement
     unit_of_measurement: ${volume_unit}/min
     filters:
-      - or:
-          - throttle: 60s
-          - delta: 0
+      - delta: 0.05
 
 switch:
   # LED flashes faster/slower as magnet rotates on water meter
@@ -616,10 +635,28 @@ interval:
   - interval: ${sensor_update_interval}
     then:
       - lambda: |-
-          uint8_t reg = 0x00;
+          // Read-only register dump (one-time) to identify the clone. Only known-good init
+          // values are ever written (0x29/0x0A/0x0B); probing registers with arbitrary
+          // values (e.g. 0x1C) froze the chip, so never write anything else.
+          static bool probe_done = false;
+          if (!probe_done) {
+            probe_done = true;
+            uint8_t vals[16] = {0};
+            for (uint8_t i = 0; i < 16; i++) {
+              uint8_t addr = i;
+              id(i2c_bus).write(0x2C, &addr, 1);
+              id(i2c_bus).read(0x2C, &vals[i], 1);
+            }
+            ESP_LOGW("probe", "REGDUMP 0x00..0x0F: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                     vals[0], vals[1], vals[2], vals[3], vals[4], vals[5], vals[6], vals[7],
+                     vals[8], vals[9], vals[10], vals[11], vals[12], vals[13], vals[14], vals[15]);
+          }
+
+          // QMC5883P data registers start at 0x01 (X_LSB); 0x00 is CHIPID
+          uint8_t reg = 0x01;
           uint8_t data[6] = {0};
 
-          // Read 6 data registers (0x00 to 0x05)
+          // Read 6 data registers (0x01 to 0x06)
           if (id(i2c_bus).write(0x2C, &reg, 1) == esphome::i2c::ERROR_OK &&
               id(i2c_bus).read(0x2C, data, 6) == esphome::i2c::ERROR_OK) {
 
@@ -627,13 +664,16 @@ interval:
             int16_t raw_y = (int16_t)((data[3] << 8) | data[2]);
             int16_t raw_z = (int16_t)((data[5] << 8) | data[4]);
 
-            float x_uT = raw_x * 0.1f;
-            float y_uT = raw_y * 0.1f;
-            float z_uT = raw_z * 0.1f;
+            // QMC5883P at +-8G: 3750 LSB/G = 37.5 LSB/µT -> 0.0267 µT/LSB
+            float x_uT = raw_x * 0.0267f;
+            float y_uT = raw_y * 0.0267f;
+            float z_uT = raw_z * 0.0267f;
 
-            // Freeze Watchdog: If X, Y, Z are identical for 50 cycles (~1s), re-arm register 0x09
+            // Freeze Watchdog: If X, Y, Z are identical for 50 cycles (~1s), re-arm CTRL1/CTRL2
             static float prev_x = 0, prev_y = 0, prev_z = 0;
             static uint8_t freeze_count = 0;
+
+            bool chip_updated = (x_uT != prev_x);
 
             if (x_uT == prev_x && y_uT == prev_y && z_uT == prev_z) {
               freeze_count++;
@@ -647,10 +687,26 @@ interval:
 
             if (freeze_count >= 50) {
               freeze_count = 0;
-              uint8_t rearm[2] = {0x09, 0x1D};
-              id(i2c_bus).write(0x2C, rearm, 2);
-              ESP_LOGW("magnetometer_clone", "Data static detected: Re-armed mode reg 0x09");
+              uint8_t rearm1[2] = {0x0A, 0x1D};
+              uint8_t rearm2[2] = {0x0B, 0x08};
+              id(i2c_bus).write(0x2C, rearm1, 2);
+              id(i2c_bus).write(0x2C, rearm2, 2);
+              uint8_t chk[1] = {0x0A};
+              uint8_t rb[1] = {0};
+              if (id(i2c_bus).write(0x2C, chk, 1) == esphome::i2c::ERROR_OK &&
+                  id(i2c_bus).read(0x2C, rb, 1) == esphome::i2c::ERROR_OK) {
+                ESP_LOGW("magnetometer_clone", "Data static detected: Re-armed QMC5883P init (readback 0x0A=0x%02X)", rb[0]);
+              } else {
+                ESP_LOGW("magnetometer_clone", "Data static detected: Re-armed QMC5883P init");
+              }
             }
+
+            // ODR / amplitude meter: count fresh chip updates and track X peak-to-peak per window
+            static uint32_t chip_updates = 0;
+            static float win_min = 1e30f, win_max = -1e30f;
+            if (chip_updated) chip_updates++;
+            if (x_uT < win_min) win_min = x_uT;
+            if (x_uT > win_max) win_max = x_uT;
 
             // Publish raw states (feeds the detection algorithm via on_value)
             id(magnetometer_x).publish_state(x_uT);
@@ -672,20 +728,16 @@ interval:
             if (++log_counter >= 100) {
               log_counter = 0;
               ESP_LOGD("magnetometer_clone", "µT -> X: %.1f, Y: %.1f, Z: %.1f", x_uT, y_uT, z_uT);
+              ESP_LOGD("magnetometer_clone", "ODR: %u updates/2s, X p2p: %.1f (min %.1f, max %.1f), win: %.1f..%.1f (span %.1f)",
+                       chip_updates, win_max - win_min, win_min, win_max,
+                       id(track_min), id(track_max), id(track_max) - id(track_min));
+              chip_updates = 0;
+              win_min = 1e30f;
+              win_max = -1e30f;
             }
 
-            // Temperature read (separate read so a failure can't kill the magnetic data)
-            uint8_t treg = 0x07;
-            uint8_t tdata[2] = {0};
-            if (id(i2c_bus).write(0x2C, &treg, 1) == esphome::i2c::ERROR_OK &&
-                id(i2c_bus).read(0x2C, tdata, 2) == esphome::i2c::ERROR_OK) {
-              int16_t raw_temp = (int16_t)((tdata[1] << 8) | tdata[0]);
-              float temp_c = raw_temp / 100.0f + id(temperature_offset).state;
-              // Throttled publish to HA (every 10s / 500 cycles)
-              static uint8_t temp_pub_counter = 0;
-              if (++temp_pub_counter >= 500) {
-                temp_pub_counter = 0;
-                id(temperature).publish_state(temp_c);
-              }
-            }
+            // NOTE: Temperature read disabled. The QMC5883P has no temperature output
+            // (regs 0x07/0x08 are reserved, unlike the QMC5883L). The `temperature` sensor
+            // stays defined but unpublished. If a clone ever exposes a real temp register,
+            // re-enable the read of 0x07/0x08 (raw / 100 + temperature_offset).
           }
